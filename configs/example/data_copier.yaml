@@ -1,0 +1,3 @@
+target_catalog: "system_table_data"
+create_catalog: true
+force_full_refresh: false

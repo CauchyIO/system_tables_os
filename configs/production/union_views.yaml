@@ -1,0 +1,8 @@
+source_catalogs:
+  - "system"
+  - "cauchy-us"
+target_catalog: "system_union"
+create_catalog: false
+excluded_schemas:
+  - "information_schema"
+  - "metadata"

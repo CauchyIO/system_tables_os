@@ -1,0 +1,4 @@
+workspace_sql_filter: "workspace_name RLIKE '.*dev.*'"
+target_group: "finance_analysts"
+target_catalog: "finance_system_views"
+create_catalog: true

@@ -1,0 +1,5 @@
+source_catalogs:
+  - "system"
+  - "cauchy-us"
+target_catalog: "system_union"
+create_catalog: true

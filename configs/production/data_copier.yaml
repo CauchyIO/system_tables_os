@@ -1,0 +1,7 @@
+target_catalog: "system_table_data"
+create_catalog: false
+force_full_refresh: false
+frequency_hours: 4
+excluded_schemas:
+  - "information_schema"
+  - "metadata"
