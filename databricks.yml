@@ -1,0 +1,87 @@
+# Databricks Asset Bundle configuration for System Tables project
+bundle:
+  name: system_tables
+
+sync:
+  include:
+    - "configs/**"
+
+# Default workspace configuration
+workspace:
+  host: https://adb-971256932836835.15.azuredatabricks.net
+  auth_type: databricks-cli
+
+# Resources configuration
+resources:
+  jobs:
+    system_table_data_copier:
+      name: "System Table Data Copier"
+      tags:
+        project: "system_tables"
+        purpose: "incremental_data_sync"
+        source: "system_catalog"
+        target: "system_table_data"
+        schedule: "every_4hrs"
+        load_type: "append_only"
+        environment: "production"
+      schedule:
+        quartz_cron_expression: "0 0 */4 * * ?"
+        timezone_id: "UTC"
+        pause_status: "PAUSED"
+      max_concurrent_runs: 1
+      tasks:
+        - task_key: copy_system_table_data
+          notebook_task:
+            notebook_path: ./consolidate/system_table_data_copier.py
+            base_parameters:
+              config_path: ${workspace.file_path}/configs/production/data_copier.yaml
+            source: WORKSPACE
+          timeout_seconds: 14400
+          environments:
+            - environment_key: Task_environment
+              spec:
+                environment_version: "4"
+          performance_target: STANDARD
+
+    catalog_union_views_creator:
+      name: "Catalog Union Views Creator"
+      tags:
+        project: "system_tables"
+        purpose: "union_views"
+        source: "system_and_cauchy-us"
+        target: "system_union"
+        environment: "production"
+      tasks:
+        - task_key: create_union_views
+          notebook_task:
+            notebook_path: ./consolidate/catalog_union_views_creator.py
+            base_parameters:
+              config_path: ${workspace.file_path}/configs/production/union_views.yaml
+            source: WORKSPACE
+          timeout_seconds: 3600
+          environments:
+            - environment_key: Task_environment
+              spec:
+                environment_version: "4"
+          performance_target: STANDARD
+
+# Targets for different workspaces
+targets:
+  default:
+    workspace:
+      host: https://adb-971256932836835.15.azuredatabricks.net
+    resources:
+      jobs:
+        # Only deploy data copier to default workspace
+        system_table_data_copier:
+          name: "System Table Data Copier"
+
+  union_workspace:
+    workspace:
+      host: https://adb-582244602844614.14.azuredatabricks.net
+      profile: adb-582244602844614
+    resources:
+      jobs:
+        # Only deploy union views creator to this workspace
+        catalog_union_views_creator:
+          name: "Catalog Union Views Creator"

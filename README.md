@@ -15,7 +15,9 @@ system_tables/
 ├── configs/
 │   └── example/
 ├── dashboards/
-└── databricks.yml
+│   ├── databricks.yml          # Dashboards bundle
+│   └── *.lvdash.json
+└── databricks.yml              # Jobs bundle (copier + union views)
 ```
 
 ## Workflows
@@ -107,6 +109,30 @@ create_catalog: true
 
 ## Deployment
 
+The project uses two separate DAB bundles: one for jobs and one for dashboards.
+
+### Jobs
+
 ```bash
-databricks bundle deploy
+databricks bundle deploy -t default              # data copier
+databricks bundle deploy -t union_workspace       # union views
 ```
+
+### Dashboards
+
+Dashboards have their own bundle in `dashboards/`. The `dataset_catalog` variable controls which catalog the dashboard queries resolve against (default: `system_union`).
+
+```bash
+cd dashboards && databricks bundle deploy
+```
+
+Override the catalog for a different environment:
+
+```bash
+cd dashboards && databricks bundle deploy --var dataset_catalog=my_catalog
+```
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| dataset_catalog | system_union | Default catalog for dashboard queries |
+| warehouse_id | feea94c5c21202c4 | SQL Warehouse ID |

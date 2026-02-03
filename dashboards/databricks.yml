@@ -1,0 +1,50 @@
+bundle:
+  name: system_tables_dashboards
+
+variables:
+  dataset_catalog:
+    description: Target Catalog for the dashboards
+    default: system_union
+  warehouse_id:
+    description: SQL Warehouse ID
+    default: feea94c5c21202c4
+
+resources:
+  dashboards:
+    account_usage_dashboard:
+      display_name: "Account Usage Dashboard v3"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ./Account Usage Dashboard v3.lvdash.json
+      embed_credentials: true
+      dataset_catalog: ${var.dataset_catalog}
+    lakeflow_system_tables_dashboard:
+      display_name: "LakeFlow System Tables Dashboard v0.1"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ./LakeFlow System Tables Dashboard v0.1.lvdash.json
+      embed_credentials: true
+      dataset_catalog: ${var.dataset_catalog}
+    model_serving_cost_dashboard:
+      display_name: "Model Serving Cost Attribution"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ./Model Serving Cost Attribution.lvdash-2.json
+      embed_credentials: true
+      dataset_catalog: ${var.dataset_catalog}
+    jobs_system_tables_dashboard:
+      display_name: "Jobs System Tables Dashboard"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ./Jobs System Tables Dashboard.lvdash.json
+      embed_credentials: true
+      dataset_catalog: ${var.dataset_catalog}
+    workspace_activity_explorer:
+      display_name: "Workspace Activity Explorer"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ./Workspace Activity Explorer.lvdash.json
+      embed_credentials: true
+      dataset_catalog: ${var.dataset_catalog}
+
+targets:
+  union_workspace:
+    default: true
+    workspace:
+      host: https://adb-582244602844614.14.azuredatabricks.net
+      profile: adb-582244602844614

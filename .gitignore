@@ -76,7 +76,6 @@ dmypy.json
 # Databricks
 .databricks/
 *.whl
-databricks.yml
 
 # Environment and secrets
 .env

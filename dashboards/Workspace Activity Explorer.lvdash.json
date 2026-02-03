@@ -1,0 +1,4378 @@
+{
+  "datasets": [
+    {
+      "name": "ae01f001",
+      "displayName": "select_workspace",
+      "queryLines": [
+        "SELECT DISTINCT\n",
+        "  concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "FROM access.workspaces_latest\n",
+        "ORDER BY workspace_label"
+      ]
+    },
+    {
+      "name": "ae01f002",
+      "displayName": "select_time_granularity",
+      "queryLines": [
+        "SELECT explode(array(\n",
+        "  'Day',\n",
+        "  'Week',\n",
+        "  'Month'\n",
+        ")) AS time_key"
+      ]
+    },
+    {
+      "name": "ae01d001",
+      "displayName": "activity_summary_counters",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        "),\n",
+        "audit_users AS (\n",
+        "  SELECT DISTINCT\n",
+        "    user_identity.email AS user_email,\n",
+        "    CASE WHEN user_identity.email LIKE '%@%' THEN 'Human' ELSE 'Service Principal' END AS user_type\n",
+        "  FROM access.audit a\n",
+        "  INNER JOIN workspace_filtered w ON a.workspace_id = w.workspace_id\n",
+        "  WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "),\n",
+        "query_count AS (\n",
+        "  SELECT COUNT(*) AS cnt\n",
+        "  FROM query.history q\n",
+        "  INNER JOIN workspace_filtered w ON q.workspace_id = w.workspace_id\n",
+        "  WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "),\n",
+        "job_count AS (\n",
+        "  SELECT COUNT(*) AS cnt\n",
+        "  FROM lakeflow.job_run_timeline j\n",
+        "  INNER JOIN workspace_filtered w ON j.workspace_id = w.workspace_id\n",
+        "  WHERE CAST(j.period_start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "),\n",
+        "dbu_total AS (\n",
+        "  SELECT ROUND(SUM(usage_quantity), 1) AS cnt\n",
+        "  FROM billing.usage u\n",
+        "  INNER JOIN workspace_filtered w ON u.workspace_id = w.workspace_id\n",
+        "  WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        ")\n",
+        "SELECT\n",
+        "  (SELECT COUNT(*) FROM audit_users WHERE user_type = 'Human') AS active_users,\n",
+        "  (SELECT COUNT(*) FROM audit_users WHERE user_type = 'Service Principal') AS service_principals,\n",
+        "  (SELECT cnt FROM query_count) AS total_queries,\n",
+        "  (SELECT cnt FROM job_count) AS total_job_runs,\n",
+        "  (SELECT cnt FROM dbu_total) AS total_dbus,\n",
+        "  ROUND(CAST((SELECT COUNT(*) FROM audit_users WHERE user_type = 'Human') AS DOUBLE) /\n",
+        "    NULLIF((SELECT COUNT(*) FROM audit_users WHERE user_type = 'Service Principal'), 0), 1) AS user_sp_ratio"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d002",
+      "displayName": "user_activity_over_time",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', a.event_date)\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', a.event_date)\n",
+        "    ELSE a.event_date\n",
+        "  END AS time_key,\n",
+        "  CASE WHEN user_identity.email LIKE '%@%' THEN 'Human' ELSE 'Service Principal' END AS user_type,\n",
+        "  COUNT(DISTINCT user_identity.email) AS distinct_users\n",
+        "FROM access.audit a\n",
+        "INNER JOIN workspace_filtered w ON a.workspace_id = w.workspace_id\n",
+        "WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY time_key, user_type\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d003",
+      "displayName": "activity_composition",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  billing_origin_product,\n",
+        "  ROUND(SUM(usage_quantity), 1) AS total_dbus\n",
+        "FROM billing.usage u\n",
+        "INNER JOIN workspace_filtered w ON u.workspace_id = w.workspace_id\n",
+        "WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY billing_origin_product\n",
+        "ORDER BY total_dbus DESC"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d004",
+      "displayName": "top_users_by_activity",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  user_identity.email AS user_email,\n",
+        "  COUNT(*) AS event_count,\n",
+        "  COUNT(DISTINCT a.event_date) AS active_days,\n",
+        "  MIN(a.event_date) AS first_seen,\n",
+        "  MAX(a.event_date) AS last_seen\n",
+        "FROM access.audit a\n",
+        "INNER JOIN workspace_filtered w ON a.workspace_id = w.workspace_id\n",
+        "WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  AND user_identity.email IS NOT NULL\n",
+        "GROUP BY user_identity.email\n",
+        "ORDER BY event_count DESC\n",
+        "LIMIT 25"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d005",
+      "displayName": "query_source_breakdown",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  COALESCE(client_application, 'Unknown') AS source,\n",
+        "  COUNT(*) AS query_count\n",
+        "FROM query.history q\n",
+        "INNER JOIN workspace_filtered w ON q.workspace_id = w.workspace_id\n",
+        "WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY source\n",
+        "ORDER BY query_count DESC\n",
+        "LIMIT 50"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d006",
+      "displayName": "service_name_breakdown",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  service_name,\n",
+        "  COUNT(*) AS event_count\n",
+        "FROM access.audit a\n",
+        "INNER JOIN workspace_filtered w ON a.workspace_id = w.workspace_id\n",
+        "WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY service_name\n",
+        "ORDER BY event_count DESC"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d007",
+      "displayName": "activity_trend",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', a.event_date)\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', a.event_date)\n",
+        "    ELSE a.event_date\n",
+        "  END AS time_key,\n",
+        "  COUNT(*) AS total_events,\n",
+        "  COUNT(DISTINCT user_identity.email) AS distinct_users\n",
+        "FROM access.audit a\n",
+        "INNER JOIN workspace_filtered w ON a.workspace_id = w.workspace_id\n",
+        "WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY time_key\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d008",
+      "displayName": "day_of_week_activity",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  date_format(a.event_date, 'EEEE') AS day_of_week,\n",
+        "  dayofweek(a.event_date) AS day_number,\n",
+        "  COUNT(*) AS event_count,\n",
+        "  COUNT(DISTINCT user_identity.email) AS distinct_users\n",
+        "FROM access.audit a\n",
+        "INNER JOIN workspace_filtered w ON a.workspace_id = w.workspace_id\n",
+        "WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY day_of_week, day_number\n",
+        "ORDER BY day_number"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d009",
+      "displayName": "hour_of_day_activity",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  HOUR(q.start_time) AS hour_of_day,\n",
+        "  COUNT(*) AS query_count\n",
+        "FROM query.history q\n",
+        "INNER JOIN workspace_filtered w ON q.workspace_id = w.workspace_id\n",
+        "WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY hour_of_day\n",
+        "ORDER BY hour_of_day"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d010",
+      "displayName": "query_volume_over_time",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', CAST(q.start_time AS DATE))\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', CAST(q.start_time AS DATE))\n",
+        "    ELSE CAST(q.start_time AS DATE)\n",
+        "  END AS time_key,\n",
+        "  statement_type,\n",
+        "  COUNT(*) AS query_count\n",
+        "FROM query.history q\n",
+        "INNER JOIN workspace_filtered w ON q.workspace_id = w.workspace_id\n",
+        "WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY time_key, statement_type\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d011",
+      "displayName": "compute_hours_over_time",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', u.usage_date)\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', u.usage_date)\n",
+        "    ELSE u.usage_date\n",
+        "  END AS time_key,\n",
+        "  billing_origin_product AS compute_type,\n",
+        "  ROUND(SUM(usage_quantity), 1) AS total_dbus\n",
+        "FROM billing.usage u\n",
+        "INNER JOIN workspace_filtered w ON u.workspace_id = w.workspace_id\n",
+        "WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY time_key, compute_type\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d012",
+      "displayName": "wow_activity_growth",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        "),\n",
+        "weekly_stats AS (\n",
+        "  SELECT\n",
+        "    date_trunc('WEEK', a.event_date) AS week_start,\n",
+        "    COUNT(*) AS total_events,\n",
+        "    COUNT(DISTINCT user_identity.email) AS distinct_users\n",
+        "  FROM access.audit a\n",
+        "  INNER JOIN workspace_filtered w ON a.workspace_id = w.workspace_id\n",
+        "  WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  GROUP BY week_start\n",
+        ")\n",
+        "SELECT\n",
+        "  week_start,\n",
+        "  total_events,\n",
+        "  distinct_users,\n",
+        "  ROUND((total_events - LAG(total_events) OVER (ORDER BY week_start)) * 100.0 /\n",
+        "    NULLIF(LAG(total_events) OVER (ORDER BY week_start), 0), 1) AS events_growth_pct,\n",
+        "  ROUND((distinct_users - LAG(distinct_users) OVER (ORDER BY week_start)) * 100.0 /\n",
+        "    NULLIF(LAG(distinct_users) OVER (ORDER BY week_start), 0), 1) AS users_growth_pct\n",
+        "FROM weekly_stats\n",
+        "ORDER BY week_start"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d013",
+      "displayName": "health_counters",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        "),\n",
+        "job_stats AS (\n",
+        "  SELECT COUNT(*) AS total_runs,\n",
+        "    COUNT(CASE WHEN result_state = 'SUCCESS' THEN 1 END) AS successful_runs\n",
+        "  FROM lakeflow.job_run_timeline j\n",
+        "  INNER JOIN workspace_filtered w ON j.workspace_id = w.workspace_id\n",
+        "  WHERE CAST(j.period_start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "),\n",
+        "query_stats AS (\n",
+        "  SELECT COUNT(*) AS total_queries,\n",
+        "    COUNT(CASE WHEN execution_status = 'FINISHED' THEN 1 END) AS successful_queries\n",
+        "  FROM query.history q\n",
+        "  INNER JOIN workspace_filtered w ON q.workspace_id = w.workspace_id\n",
+        "  WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        ")\n",
+        "SELECT\n",
+        "  ROUND(j.successful_runs * 100.0 / NULLIF(j.total_runs, 0), 1) AS job_success_rate,\n",
+        "  ROUND(q.successful_queries * 100.0 / NULLIF(q.total_queries, 0), 1) AS query_success_rate,\n",
+        "  j.total_runs AS total_job_runs\n",
+        "FROM job_stats j CROSS JOIN query_stats q"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d014",
+      "displayName": "job_status_over_time",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', CAST(j.period_start_time AS DATE))\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', CAST(j.period_start_time AS DATE))\n",
+        "    ELSE CAST(j.period_start_time AS DATE)\n",
+        "  END AS time_key,\n",
+        "  result_state,\n",
+        "  COUNT(*) AS run_count\n",
+        "FROM lakeflow.job_run_timeline j\n",
+        "INNER JOIN workspace_filtered w ON j.workspace_id = w.workspace_id\n",
+        "WHERE CAST(j.period_start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY time_key, result_state\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d015",
+      "displayName": "query_status_over_time",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', CAST(q.start_time AS DATE))\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', CAST(q.start_time AS DATE))\n",
+        "    ELSE CAST(q.start_time AS DATE)\n",
+        "  END AS time_key,\n",
+        "  execution_status AS status,\n",
+        "  COUNT(*) AS query_count\n",
+        "FROM query.history q\n",
+        "INNER JOIN workspace_filtered w ON q.workspace_id = w.workspace_id\n",
+        "WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY time_key, status\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d016",
+      "displayName": "top_failing_jobs",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  COALESCE(jobs.name, CAST(j.job_id AS STRING)) AS job_name,\n",
+        "  j.job_id,\n",
+        "  COUNT(*) AS failure_count,\n",
+        "  MAX(CAST(j.period_start_time AS DATE)) AS last_failure_date\n",
+        "FROM lakeflow.job_run_timeline j\n",
+        "INNER JOIN workspace_filtered w ON j.workspace_id = w.workspace_id\n",
+        "LEFT JOIN lakeflow.jobs jobs ON j.job_id = jobs.job_id AND j.workspace_id = jobs.workspace_id\n",
+        "WHERE CAST(j.period_start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  AND j.result_state IN ('FAILED', 'TIMEDOUT')\n",
+        "GROUP BY job_name, j.job_id\n",
+        "ORDER BY failure_count DESC\n",
+        "LIMIT 20"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d017",
+      "displayName": "warehouse_usage_over_time",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', u.usage_date)\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', u.usage_date)\n",
+        "    ELSE u.usage_date\n",
+        "  END AS time_key,\n",
+        "  sku_name AS event_type,\n",
+        "  ROUND(SUM(usage_quantity), 1) AS event_count\n",
+        "FROM billing.usage u\n",
+        "INNER JOIN workspace_filtered w ON u.workspace_id = w.workspace_id\n",
+        "WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  AND billing_origin_product = 'SQL_WAREHOUSE'\n",
+        "GROUP BY time_key, event_type\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<ALL WORKSPACES>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d018",
+      "displayName": "workspace_dbu_comparison",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name\n",
+        "  FROM access.workspaces_latest\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', u.usage_date)\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', u.usage_date)\n",
+        "    ELSE u.usage_date\n",
+        "  END AS time_key,\n",
+        "  COALESCE(w.workspace_name, CAST(u.workspace_id AS STRING)) AS workspace_name,\n",
+        "  ROUND(SUM(usage_quantity), 1) AS total_dbus\n",
+        "FROM billing.usage u\n",
+        "LEFT JOIN workspace w ON u.workspace_id = w.workspace_id\n",
+        "WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY 1, 2\n",
+        "ORDER BY 1"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d019",
+      "displayName": "workspace_users_comparison",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name\n",
+        "  FROM access.workspaces_latest\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', a.event_date)\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', a.event_date)\n",
+        "    ELSE a.event_date\n",
+        "  END AS time_key,\n",
+        "  COALESCE(w.workspace_name, CAST(a.workspace_id AS STRING)) AS workspace_name,\n",
+        "  COUNT(DISTINCT user_identity.email) AS distinct_users\n",
+        "FROM access.audit a\n",
+        "LEFT JOIN workspace w ON a.workspace_id = w.workspace_id\n",
+        "WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY 1, 2\n",
+        "ORDER BY 1"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d020",
+      "displayName": "workspace_queries_comparison",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name\n",
+        "  FROM access.workspaces_latest\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', CAST(q.start_time AS DATE))\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', CAST(q.start_time AS DATE))\n",
+        "    ELSE CAST(q.start_time AS DATE)\n",
+        "  END AS time_key,\n",
+        "  COALESCE(w.workspace_name, CAST(q.workspace_id AS STRING)) AS workspace_name,\n",
+        "  COUNT(*) AS query_count\n",
+        "FROM query.history q\n",
+        "LEFT JOIN workspace w ON q.workspace_id = w.workspace_id\n",
+        "WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY 1, 2\n",
+        "ORDER BY 1"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d021",
+      "displayName": "workspace_jobs_comparison",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name\n",
+        "  FROM access.workspaces_latest\n",
+        ")\n",
+        "SELECT\n",
+        "  CASE\n",
+        "    WHEN :param_time_key = 'Month' THEN date_trunc('MONTH', CAST(j.period_start_time AS DATE))\n",
+        "    WHEN :param_time_key = 'Week' THEN date_trunc('WEEK', CAST(j.period_start_time AS DATE))\n",
+        "    ELSE CAST(j.period_start_time AS DATE)\n",
+        "  END AS time_key,\n",
+        "  COALESCE(w.workspace_name, CAST(j.workspace_id AS STRING)) AS workspace_name,\n",
+        "  COUNT(*) AS run_count\n",
+        "FROM lakeflow.job_run_timeline j\n",
+        "LEFT JOIN workspace w ON j.workspace_id = w.workspace_id\n",
+        "WHERE CAST(j.period_start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "GROUP BY 1, 2\n",
+        "ORDER BY 1"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Day"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d022",
+      "displayName": "workspace_activity_summary",
+      "queryLines": [
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "user_counts AS (\n",
+        "  SELECT a.workspace_id,\n",
+        "    COUNT(DISTINCT CASE WHEN user_identity.email LIKE '%@%' THEN user_identity.email END) AS human_users,\n",
+        "    COUNT(DISTINCT CASE WHEN user_identity.email NOT LIKE '%@%' THEN user_identity.email END) AS service_principals,\n",
+        "    MAX(a.event_date) AS last_activity_date\n",
+        "  FROM access.audit a\n",
+        "  WHERE a.event_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  GROUP BY a.workspace_id\n",
+        "),\n",
+        "query_counts AS (\n",
+        "  SELECT q.workspace_id, COUNT(*) AS total_queries\n",
+        "  FROM query.history q\n",
+        "  WHERE CAST(q.start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  GROUP BY q.workspace_id\n",
+        "),\n",
+        "job_counts AS (\n",
+        "  SELECT j.workspace_id, COUNT(*) AS total_job_runs\n",
+        "  FROM lakeflow.job_run_timeline j\n",
+        "  WHERE CAST(j.period_start_time AS DATE) BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  GROUP BY j.workspace_id\n",
+        "),\n",
+        "dbu_totals AS (\n",
+        "  SELECT u.workspace_id, ROUND(SUM(usage_quantity), 1) AS total_dbus\n",
+        "  FROM billing.usage u\n",
+        "  WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "  GROUP BY u.workspace_id\n",
+        ")\n",
+        "SELECT\n",
+        "  COALESCE(w.workspace_name, CAST(w.workspace_id AS STRING)) AS workspace_name,\n",
+        "  COALESCE(uc.human_users, 0) AS human_users,\n",
+        "  COALESCE(uc.service_principals, 0) AS service_principals,\n",
+        "  COALESCE(qc.total_queries, 0) AS total_queries,\n",
+        "  COALESCE(jc.total_job_runs, 0) AS total_job_runs,\n",
+        "  COALESCE(dt.total_dbus, 0) AS total_dbus,\n",
+        "  uc.last_activity_date\n",
+        "FROM workspace w\n",
+        "LEFT JOIN user_counts uc ON w.workspace_id = uc.workspace_id\n",
+        "LEFT JOIN query_counts qc ON w.workspace_id = qc.workspace_id\n",
+        "LEFT JOIN job_counts jc ON w.workspace_id = jc.workspace_id\n",
+        "LEFT JOIN dbu_totals dt ON w.workspace_id = dt.workspace_id\n",
+        "ORDER BY total_dbus DESC"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {
+                "value": "now-30d/d"
+              },
+              "max": {
+                "value": "now/d"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "ae01p000",
+      "displayName": "Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "ae01w001",
+            "queries": [
+              {
+                "name": "values_ae01w001",
+                "query": {
+                  "datasetName": "ae01f001",
+                  "fields": [
+                    {
+                      "name": "workspace_label",
+                      "expression": "`workspace_label`"
+                    },
+                    {
+                      "name": "workspace_label_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d001",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d002",
+                "query": {
+                  "datasetName": "ae01d002",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d003",
+                "query": {
+                  "datasetName": "ae01d003",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d004",
+                "query": {
+                  "datasetName": "ae01d004",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d005",
+                "query": {
+                  "datasetName": "ae01d005",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d006",
+                "query": {
+                  "datasetName": "ae01d006",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d007",
+                "query": {
+                  "datasetName": "ae01d007",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d008",
+                "query": {
+                  "datasetName": "ae01d008",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d009",
+                "query": {
+                  "datasetName": "ae01d009",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d010",
+                "query": {
+                  "datasetName": "ae01d010",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d011",
+                "query": {
+                  "datasetName": "ae01d011",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d012",
+                "query": {
+                  "datasetName": "ae01d012",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d013",
+                "query": {
+                  "datasetName": "ae01d013",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d014",
+                "query": {
+                  "datasetName": "ae01d014",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d015",
+                "query": {
+                  "datasetName": "ae01d015",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d016",
+                "query": {
+                  "datasetName": "ae01d016",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d017",
+                "query": {
+                  "datasetName": "ae01d017",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workspace_label",
+                    "displayName": "workspace_label",
+                    "queryName": "values_ae01w001"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d001"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d002"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d003"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d004"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d005"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d006"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d007"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d008"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d009"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d010"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d011"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d012"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d013"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d014"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d015"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d016"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d017"
+                  }
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "<ALL WORKSPACES>"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Workspace",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w002",
+            "queries": [
+              {
+                "name": "param_ae01w002_ae01d001",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d002",
+                "query": {
+                  "datasetName": "ae01d002",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d003",
+                "query": {
+                  "datasetName": "ae01d003",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d004",
+                "query": {
+                  "datasetName": "ae01d004",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d005",
+                "query": {
+                  "datasetName": "ae01d005",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d006",
+                "query": {
+                  "datasetName": "ae01d006",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d007",
+                "query": {
+                  "datasetName": "ae01d007",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d008",
+                "query": {
+                  "datasetName": "ae01d008",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d009",
+                "query": {
+                  "datasetName": "ae01d009",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d010",
+                "query": {
+                  "datasetName": "ae01d010",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d011",
+                "query": {
+                  "datasetName": "ae01d011",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d012",
+                "query": {
+                  "datasetName": "ae01d012",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d013",
+                "query": {
+                  "datasetName": "ae01d013",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d014",
+                "query": {
+                  "datasetName": "ae01d014",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d015",
+                "query": {
+                  "datasetName": "ae01d015",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d016",
+                "query": {
+                  "datasetName": "ae01d016",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d017",
+                "query": {
+                  "datasetName": "ae01d017",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d018",
+                "query": {
+                  "datasetName": "ae01d018",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d019",
+                "query": {
+                  "datasetName": "ae01d019",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d020",
+                "query": {
+                  "datasetName": "ae01d020",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d021",
+                "query": {
+                  "datasetName": "ae01d021",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d022",
+                "query": {
+                  "datasetName": "ae01d022",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d001"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d002"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d003"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d004"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d005"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d006"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d007"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d008"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d009"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d010"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d011"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d012"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d013"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d014"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d015"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d016"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d017"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d018"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d019"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d020"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d021"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d022"
+                  }
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "range": {
+                    "dataType": "DATE",
+                    "min": {
+                      "value": "now-30d/d"
+                    },
+                    "max": {
+                      "value": "now/d"
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Date Range",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w003",
+            "queries": [
+              {
+                "name": "values_ae01w003",
+                "query": {
+                  "datasetName": "ae01f002",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "time_key_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d002",
+                "query": {
+                  "datasetName": "ae01d002",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d007",
+                "query": {
+                  "datasetName": "ae01d007",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d010",
+                "query": {
+                  "datasetName": "ae01d010",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d011",
+                "query": {
+                  "datasetName": "ae01d011",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d014",
+                "query": {
+                  "datasetName": "ae01d014",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d015",
+                "query": {
+                  "datasetName": "ae01d015",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d017",
+                "query": {
+                  "datasetName": "ae01d017",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d018",
+                "query": {
+                  "datasetName": "ae01d018",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d019",
+                "query": {
+                  "datasetName": "ae01d019",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d020",
+                "query": {
+                  "datasetName": "ae01d020",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d021",
+                "query": {
+                  "datasetName": "ae01d021",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "time_key",
+                    "displayName": "time_key",
+                    "queryName": "values_ae01w003"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d002"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d007"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d010"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d011"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d014"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d015"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d017"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d018"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d019"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d020"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d021"
+                  }
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [
+                      {
+                        "value": "Day"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Time Granularity",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS"
+    },
+    {
+      "name": "ae01p001",
+      "displayName": "Activity Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "ae01w004",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "fields": [
+                    {
+                      "name": "sum(active_users)",
+                      "expression": "SUM(`active_users`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(active_users)",
+                  "displayName": "Active Users"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Active Users",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w005",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "fields": [
+                    {
+                      "name": "sum(service_principals)",
+                      "expression": "SUM(`service_principals`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(service_principals)",
+                  "displayName": "Service Principals"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Service Principals",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w006",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "fields": [
+                    {
+                      "name": "sum(total_queries)",
+                      "expression": "SUM(`total_queries`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_queries)",
+                  "displayName": "Total Queries"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Queries",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w007",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "fields": [
+                    {
+                      "name": "sum(total_job_runs)",
+                      "expression": "SUM(`total_job_runs`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_job_runs)",
+                  "displayName": "Total Job Runs"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Job Runs",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w008",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "fields": [
+                    {
+                      "name": "sum(total_dbus)",
+                      "expression": "SUM(`total_dbus`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_dbus)",
+                  "displayName": "Total DBUs"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total DBUs",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w009",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d001",
+                  "fields": [
+                    {
+                      "name": "sum(user_sp_ratio)",
+                      "expression": "SUM(`user_sp_ratio`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(user_sp_ratio)",
+                  "displayName": "User : SP Ratio"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "User : SP Ratio",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w010",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d002",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "user_type",
+                      "expression": "`user_type`"
+                    },
+                    {
+                      "name": "sum(distinct_users)",
+                      "expression": "SUM(`distinct_users`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(distinct_users)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "distinct_users"
+                },
+                "color": {
+                  "fieldName": "user_type",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "user_type"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Users Over Time (Human vs Service Principal)",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w011",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d003",
+                  "fields": [
+                    {
+                      "name": "billing_origin_product",
+                      "expression": "`billing_origin_product`"
+                    },
+                    {
+                      "name": "sum(total_dbus)",
+                      "expression": "SUM(`total_dbus`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "sum(total_dbus)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "total_dbus"
+                },
+                "color": {
+                  "fieldName": "billing_origin_product",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "billing_origin_product"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "DBU Composition by Product",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w012",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d004",
+                  "fields": [
+                    {
+                      "name": "user_email",
+                      "expression": "`user_email`"
+                    },
+                    {
+                      "name": "event_count",
+                      "expression": "`event_count`"
+                    },
+                    {
+                      "name": "active_days",
+                      "expression": "`active_days`"
+                    },
+                    {
+                      "name": "first_seen",
+                      "expression": "`first_seen`"
+                    },
+                    {
+                      "name": "last_seen",
+                      "expression": "`last_seen`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "user_email",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 0,
+                    "title": "User",
+                    "allowSearch": true,
+                    "alignContent": "left",
+                    "displayName": "user_email"
+                  },
+                  {
+                    "fieldName": "event_count",
+                    "type": "number",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 1,
+                    "title": "Events",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "displayName": "event_count"
+                  },
+                  {
+                    "fieldName": "active_days",
+                    "type": "number",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 2,
+                    "title": "Active Days",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "displayName": "active_days"
+                  },
+                  {
+                    "fieldName": "first_seen",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 3,
+                    "title": "First Seen",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "displayName": "first_seen"
+                  },
+                  {
+                    "fieldName": "last_seen",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 4,
+                    "title": "Last Seen",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "displayName": "last_seen"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Top 25 Users by Activity",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w013",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d005",
+                  "fields": [
+                    {
+                      "name": "source",
+                      "expression": "`source`"
+                    },
+                    {
+                      "name": "sum(query_count)",
+                      "expression": "SUM(`query_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "source",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "source"
+                },
+                "y": {
+                  "fieldName": "sum(query_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "query_count"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Queries by Source",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w014",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d006",
+                  "fields": [
+                    {
+                      "name": "service_name",
+                      "expression": "`service_name`"
+                    },
+                    {
+                      "name": "sum(event_count)",
+                      "expression": "SUM(`event_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "service_name",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "service_name"
+                },
+                "y": {
+                  "fieldName": "sum(event_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "event_count"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Audit Events by Service",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 16,
+            "width": 3,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "ae01p002",
+      "displayName": "Temporal Patterns",
+      "layout": [
+        {
+          "widget": {
+            "name": "ae01w015",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d007",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "sum(total_events)",
+                      "expression": "SUM(`total_events`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(total_events)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "total_events"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Activity Trend (Total Events)",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w030",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d007",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "sum(distinct_users)",
+                      "expression": "SUM(`distinct_users`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(distinct_users)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "distinct_users"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Activity Trend (Distinct Users)",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w016",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d008",
+                  "fields": [
+                    {
+                      "name": "day_of_week",
+                      "expression": "`day_of_week`"
+                    },
+                    {
+                      "name": "sum(event_count)",
+                      "expression": "SUM(`event_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "day_of_week",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "day_of_week"
+                },
+                "y": {
+                  "fieldName": "sum(event_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "event_count"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Activity by Day of Week",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w017",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d009",
+                  "fields": [
+                    {
+                      "name": "hour_of_day",
+                      "expression": "`hour_of_day`"
+                    },
+                    {
+                      "name": "sum(query_count)",
+                      "expression": "SUM(`query_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "hour_of_day",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "hour_of_day"
+                },
+                "y": {
+                  "fieldName": "sum(query_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "query_count"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Query Activity by Hour of Day",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w018",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d010",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "statement_type",
+                      "expression": "`statement_type`"
+                    },
+                    {
+                      "name": "sum(query_count)",
+                      "expression": "SUM(`query_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(query_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "query_count"
+                },
+                "color": {
+                  "fieldName": "statement_type",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "statement_type"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Query Volume by Statement Type",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w019",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d011",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "compute_type",
+                      "expression": "`compute_type`"
+                    },
+                    {
+                      "name": "sum(total_dbus)",
+                      "expression": "SUM(`total_dbus`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(total_dbus)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "total_dbus"
+                },
+                "color": {
+                  "fieldName": "compute_type",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "compute_type"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "DBU Consumption by Compute Type",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 12,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w020",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d012",
+                  "fields": [
+                    {
+                      "name": "week_start",
+                      "expression": "`week_start`"
+                    },
+                    {
+                      "name": "sum(events_growth_pct)",
+                      "expression": "SUM(`events_growth_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "week_start",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "week_start"
+                },
+                "y": {
+                  "fieldName": "sum(events_growth_pct)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "events_growth_pct"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Week-over-Week Events Growth %",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 18,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w031",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d012",
+                  "fields": [
+                    {
+                      "name": "week_start",
+                      "expression": "`week_start`"
+                    },
+                    {
+                      "name": "sum(users_growth_pct)",
+                      "expression": "SUM(`users_growth_pct`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "week_start",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "week_start"
+                },
+                "y": {
+                  "fieldName": "sum(users_growth_pct)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "users_growth_pct"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Week-over-Week Users Growth %",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 18,
+            "width": 3,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "ae01p003",
+      "displayName": "Health & Reliability",
+      "layout": [
+        {
+          "widget": {
+            "name": "ae01w021",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d013",
+                  "fields": [
+                    {
+                      "name": "sum(job_success_rate)",
+                      "expression": "SUM(`job_success_rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(job_success_rate)",
+                  "displayName": "Job Success Rate %"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Job Success Rate %",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w022",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d013",
+                  "fields": [
+                    {
+                      "name": "sum(query_success_rate)",
+                      "expression": "SUM(`query_success_rate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(query_success_rate)",
+                  "displayName": "Query Success Rate %"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Query Success Rate %",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w023",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d013",
+                  "fields": [
+                    {
+                      "name": "sum(total_job_runs)",
+                      "expression": "SUM(`total_job_runs`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_job_runs)",
+                  "displayName": "Total Job Runs"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Job Runs",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 0,
+            "width": 2,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w024",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d014",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "result_state",
+                      "expression": "`result_state`"
+                    },
+                    {
+                      "name": "sum(run_count)",
+                      "expression": "SUM(`run_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(run_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "run_count"
+                },
+                "color": {
+                  "fieldName": "result_state",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "result_state"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Job Run Outcomes Over Time",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w025",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d015",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "sum(query_count)",
+                      "expression": "SUM(`query_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(query_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "query_count"
+                },
+                "color": {
+                  "fieldName": "status",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "status"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Query Outcomes Over Time",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w026",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d016",
+                  "fields": [
+                    {
+                      "name": "job_name",
+                      "expression": "`job_name`"
+                    },
+                    {
+                      "name": "job_id",
+                      "expression": "`job_id`"
+                    },
+                    {
+                      "name": "failure_count",
+                      "expression": "`failure_count`"
+                    },
+                    {
+                      "name": "last_failure_date",
+                      "expression": "`last_failure_date`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "job_name",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 0,
+                    "title": "Job Name",
+                    "allowSearch": true,
+                    "alignContent": "left",
+                    "displayName": "job_name"
+                  },
+                  {
+                    "fieldName": "job_id",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 1,
+                    "title": "Job ID",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "displayName": "job_id"
+                  },
+                  {
+                    "fieldName": "failure_count",
+                    "type": "number",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 2,
+                    "title": "Failures",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "displayName": "failure_count"
+                  },
+                  {
+                    "fieldName": "last_failure_date",
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 3,
+                    "title": "Last Failure",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "displayName": "last_failure_date"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Top 20 Failing Jobs",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w027",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d017",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "event_type",
+                      "expression": "`event_type`"
+                    },
+                    {
+                      "name": "sum(event_count)",
+                      "expression": "SUM(`event_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(event_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "event_count"
+                },
+                "color": {
+                  "fieldName": "event_type",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "event_type"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "SQL Warehouse DBU Usage Over Time",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 16,
+            "width": 6,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "ae01p004",
+      "displayName": "Workspace Comparison",
+      "layout": [
+        {
+          "widget": {
+            "name": "ae01w032",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d018",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "sum(total_dbus)",
+                      "expression": "SUM(`total_dbus`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(total_dbus)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "total_dbus"
+                },
+                "color": {
+                  "fieldName": "workspace_name",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "workspace_name"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "DBU Consumption by Workspace",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w033",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d019",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "sum(distinct_users)",
+                      "expression": "SUM(`distinct_users`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(distinct_users)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "distinct_users"
+                },
+                "color": {
+                  "fieldName": "workspace_name",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "workspace_name"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Active Users by Workspace",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w034",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d020",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "sum(query_count)",
+                      "expression": "SUM(`query_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(query_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "query_count"
+                },
+                "color": {
+                  "fieldName": "workspace_name",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "workspace_name"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Query Volume by Workspace",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w035",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d021",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "sum(run_count)",
+                      "expression": "SUM(`run_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "time_key"
+                },
+                "y": {
+                  "fieldName": "sum(run_count)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "run_count"
+                },
+                "color": {
+                  "fieldName": "workspace_name",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "workspace_name"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Job Runs by Workspace",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "ae01w036",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d022",
+                  "fields": [
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "human_users",
+                      "expression": "`human_users`"
+                    },
+                    {
+                      "name": "service_principals",
+                      "expression": "`service_principals`"
+                    },
+                    {
+                      "name": "total_queries",
+                      "expression": "`total_queries`"
+                    },
+                    {
+                      "name": "total_job_runs",
+                      "expression": "`total_job_runs`"
+                    },
+                    {
+                      "name": "total_dbus",
+                      "expression": "`total_dbus`"
+                    },
+                    {
+                      "name": "last_activity_date",
+                      "expression": "`last_activity_date`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "workspace_name",
+                    "displayName": "Workspace"
+                  },
+                  {
+                    "fieldName": "human_users",
+                    "displayName": "Human Users"
+                  },
+                  {
+                    "fieldName": "service_principals",
+                    "displayName": "Service Principals"
+                  },
+                  {
+                    "fieldName": "total_queries",
+                    "displayName": "Queries"
+                  },
+                  {
+                    "fieldName": "total_job_runs",
+                    "displayName": "Job Runs"
+                  },
+                  {
+                    "fieldName": "total_dbus",
+                    "displayName": "Total DBUs"
+                  },
+                  {
+                    "fieldName": "last_activity_date",
+                    "displayName": "Last Activity"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Workspace Activity Summary",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 6,
+            "height": 8
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ]
+}

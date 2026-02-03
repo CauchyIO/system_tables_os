@@ -134,7 +134,7 @@ for table_info in tables:
         get_select_for_catalog(catalog, schema, table, all_columns, mismatched, schemas_by_catalog)
         for catalog in valid_catalogs
     ]
-    union_sql = " UNION ALL ".join(union_parts)
+    union_sql = " UNION ".join(union_parts)
 
     spark.sql(f"CREATE OR REPLACE VIEW {view_name} AS {union_sql}")
 

@@ -8,6 +8,7 @@
 - No comments
 - Minimal print statements
 - Hard fail (no try/except)
+- Always use `uv run` instead of `python` 
 
 ## Configuration
 - Widget parameters as defaults
