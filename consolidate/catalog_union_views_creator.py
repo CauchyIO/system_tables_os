@@ -5,6 +5,7 @@
 import sys
 sys.path.append("..")
 from utils import UnionViewsConfig, load_config_from_yaml
+from table_registry import get_table_definition, TableRegionality
 
 # COMMAND ----------
 
@@ -124,6 +125,16 @@ for table_info in tables:
 
     view_name = f"{config.target_catalog}.{schema}.{table}"
 
+    table_path = f"system.{schema}.{table}"
+    definition = get_table_definition(table_path)
+
+    if definition and definition.regionality == TableRegionality.GLOBAL:
+        primary_source = f"`{primary_catalog}`.{schema}.{table}"
+        if spark.catalog.tableExists(primary_source):
+            spark.sql(f"CREATE OR REPLACE VIEW {view_name} AS SELECT * FROM {primary_source}")
+            created_views.append(view_name)
+        continue
+
     all_columns, mismatched, schemas_by_catalog, valid_catalogs = analyze_schemas(config.source_catalogs, schema, table)
 
     if not valid_catalogs:
@@ -134,7 +145,7 @@ for table_info in tables:
         get_select_for_catalog(catalog, schema, table, all_columns, mismatched, schemas_by_catalog)
         for catalog in valid_catalogs
     ]
-    union_sql = " UNION ".join(union_parts)
+    union_sql = " UNION ALL ".join(union_parts)
 
     spark.sql(f"CREATE OR REPLACE VIEW {view_name} AS {union_sql}")
 
