@@ -1507,6 +1507,520 @@
           }
         }
       ]
+    },
+    {
+      "name": "ae01f003",
+      "displayName": "select_group_key",
+      "queryLines": [
+        "SELECT explode(array(\n",
+        "  'Workspace',\n",
+        "  'Product',\n",
+        "  'SKU'\n",
+        ")) AS group_key"
+      ]
+    },
+    {
+      "name": "ae01f004",
+      "displayName": "select_product_filter",
+      "queryLines": [
+        "SELECT '<ALL>' AS product_category\n",
+        "UNION ALL\n",
+        "SELECT DISTINCT billing_origin_product AS product_category\n",
+        "FROM billing.usage\n",
+        "ORDER BY product_category"
+      ]
+    },
+    {
+      "name": "ae01f005",
+      "displayName": "select_usage_toggle",
+      "queryLines": [
+        "SELECT explode(array(\n",
+        "  'Dollars',\n",
+        "  'DBUs'\n",
+        ")) AS usage_toggle"
+      ]
+    },
+    {
+      "name": "ae01d023",
+      "displayName": "usage_overview",
+      "queryLines": [
+        "SET ansi_mode = true;\n",
+        "\n",
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        "),\n",
+        "usage_with_ws AS (\n",
+        "  SELECT\n",
+        "    COALESCE(w.workspace_label, CONCAT('id: ', u.workspace_id)) AS workspace_norm,\n",
+        "    u.*\n",
+        "  FROM billing.usage AS u\n",
+        "  INNER JOIN workspace_filtered w ON u.workspace_id = w.workspace_id\n",
+        "  WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "),\n",
+        "usage_filtered AS (\n",
+        "  SELECT *\n",
+        "  FROM usage_with_ws\n",
+        "  WHERE IF(:param_product_category = '<ALL>', TRUE, billing_origin_product = :param_product_category)\n",
+        "),\n",
+        "parsed_discounts_table AS (\n",
+        "  WITH split_data AS (\n",
+        "    SELECT explode(split(regexp_replace(upper(:param_discounts), '\\\\s+', ''), ';')) AS kv_pair\n",
+        "    FROM VALUES(1) AS dummy(x)\n",
+        "  ),\n",
+        "  clean_keys AS (\n",
+        "    SELECT\n",
+        "      split(kv_pair, '=')[0] AS product,\n",
+        "      try_cast(split(kv_pair, '=')[1] AS decimal(10,3)) AS discount,\n",
+        "      CASE WHEN contains(kv_pair, '=') THEN 1 ELSE 0 END AS ContainsValuePair\n",
+        "    FROM split_data\n",
+        "  )\n",
+        "  SELECT * FROM clean_keys WHERE ContainsValuePair = 1\n",
+        "),\n",
+        "prices AS (\n",
+        "  SELECT coalesce(price_end_time, date_add(current_date, 1)) AS coalesced_price_end_time, *, 'list' AS price_type\n",
+        "  FROM IDENTIFIER(:param_price_table)\n",
+        "  WHERE currency_code = 'USD'\n",
+        "),\n",
+        "list_priced_usd AS (\n",
+        "  SELECT\n",
+        "    COALESCE(\n",
+        "      (1-try_cast(regexp_extract(:param_discounts, '\\\\s*\\\\*\\\\s*=\\\\s*([0-9]*\\\\.?[0-9]+)', 1) AS decimal(10, 3)))* p.pricing.default * u.usage_quantity,\n",
+        "      (1-COALESCE(discounts.discount, 0))* p.pricing.default * u.usage_quantity,\n",
+        "      p.pricing.default * u.usage_quantity) AS usage_usd,\n",
+        "    usage_quantity AS usage_dbus,\n",
+        "    date_trunc('MONTH', usage_date) AS usage_month,\n",
+        "    date_trunc('WEEK', usage_date) AS usage_week,\n",
+        "    u.*\n",
+        "  FROM usage_filtered AS u\n",
+        "  LEFT JOIN parsed_discounts_table AS discounts ON (discounts.product = u.sku_name OR discounts.product = u.billing_origin_product)\n",
+        "  LEFT JOIN prices AS p ON u.sku_name = p.sku_name AND u.usage_unit = p.usage_unit AND (u.usage_end_time BETWEEN p.price_start_time AND p.coalesced_price_end_time)\n",
+        "),\n",
+        "with_time_key AS (\n",
+        "  SELECT\n",
+        "    CASE\n",
+        "      WHEN :param_time_key = 'Month' THEN usage_month\n",
+        "      WHEN :param_time_key = 'Week' THEN usage_week\n",
+        "      ELSE usage_date\n",
+        "    END AS time_key,\n",
+        "    *\n",
+        "  FROM list_priced_usd\n",
+        "),\n",
+        "with_group_key AS (\n",
+        "  SELECT\n",
+        "    CASE\n",
+        "      WHEN :param_group_key = 'Workspace' THEN workspace_norm\n",
+        "      WHEN :param_group_key = 'Product' THEN billing_origin_product\n",
+        "      WHEN :param_group_key = 'SKU' THEN sku_name\n",
+        "    END AS group_key,\n",
+        "    *\n",
+        "  FROM with_time_key\n",
+        ")\n",
+        "SELECT\n",
+        "  time_key,\n",
+        "  group_key,\n",
+        "  CASE WHEN :param_usage_toggle = 'Dollars' THEN SUM(usage_usd) ELSE SUM(usage_dbus) END AS usage_value\n",
+        "FROM with_group_key\n",
+        "GROUP BY time_key, group_key\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "<ALL WORKSPACES>"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {"value": "now-30d/d"},
+              "max": {"value": "now/d"}
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "Day"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_product_category",
+          "keyword": "param_product_category",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "<ALL>"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_discounts",
+          "keyword": "param_discounts",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "*=0.0"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_price_table",
+          "keyword": "param_price_table",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "billing.list_prices"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_group_key",
+          "keyword": "param_group_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "Product"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_usage_toggle",
+          "keyword": "param_usage_toggle",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "Dollars"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d024",
+      "displayName": "sku_breakdown",
+      "queryLines": [
+        "SET ansi_mode = true;\n",
+        "\n",
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        "),\n",
+        "usage_with_ws AS (\n",
+        "  SELECT u.*\n",
+        "  FROM billing.usage AS u\n",
+        "  INNER JOIN workspace_filtered w ON u.workspace_id = w.workspace_id\n",
+        "  WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "),\n",
+        "usage_filtered AS (\n",
+        "  SELECT *\n",
+        "  FROM usage_with_ws\n",
+        "  WHERE IF(:param_product_category = '<ALL>', TRUE, billing_origin_product = :param_product_category)\n",
+        "),\n",
+        "parsed_discounts_table AS (\n",
+        "  WITH split_data AS (\n",
+        "    SELECT explode(split(regexp_replace(upper(:param_discounts), '\\\\s+', ''), ';')) AS kv_pair\n",
+        "    FROM VALUES(1) AS dummy(x)\n",
+        "  ),\n",
+        "  clean_keys AS (\n",
+        "    SELECT\n",
+        "      split(kv_pair, '=')[0] AS product,\n",
+        "      try_cast(split(kv_pair, '=')[1] AS decimal(10,3)) AS discount,\n",
+        "      CASE WHEN contains(kv_pair, '=') THEN 1 ELSE 0 END AS ContainsValuePair\n",
+        "    FROM split_data\n",
+        "  )\n",
+        "  SELECT * FROM clean_keys WHERE ContainsValuePair = 1\n",
+        "),\n",
+        "prices AS (\n",
+        "  SELECT coalesce(price_end_time, date_add(current_date, 1)) AS coalesced_price_end_time, *, 'list' AS price_type\n",
+        "  FROM IDENTIFIER(:param_price_table)\n",
+        "  WHERE currency_code = 'USD'\n",
+        "),\n",
+        "list_priced_usd AS (\n",
+        "  SELECT\n",
+        "    COALESCE(\n",
+        "      (1-try_cast(regexp_extract(:param_discounts, '\\\\s*\\\\*\\\\s*=\\\\s*([0-9]*\\\\.?[0-9]+)', 1) AS decimal(10, 3)))* p.pricing.default * u.usage_quantity,\n",
+        "      (1-COALESCE(discounts.discount, 0))* p.pricing.default * u.usage_quantity,\n",
+        "      p.pricing.default * u.usage_quantity) AS usage_usd,\n",
+        "    usage_quantity AS usage_dbus,\n",
+        "    date_trunc('MONTH', usage_date) AS usage_month,\n",
+        "    date_trunc('WEEK', usage_date) AS usage_week,\n",
+        "    u.*\n",
+        "  FROM usage_filtered AS u\n",
+        "  LEFT JOIN parsed_discounts_table AS discounts ON (discounts.product = u.sku_name OR discounts.product = u.billing_origin_product)\n",
+        "  LEFT JOIN prices AS p ON u.sku_name = p.sku_name AND u.usage_unit = p.usage_unit AND (u.usage_end_time BETWEEN p.price_start_time AND p.coalesced_price_end_time)\n",
+        "),\n",
+        "with_time_key AS (\n",
+        "  SELECT\n",
+        "    CASE\n",
+        "      WHEN :param_time_key = 'Month' THEN usage_month\n",
+        "      WHEN :param_time_key = 'Week' THEN usage_week\n",
+        "      ELSE usage_date\n",
+        "    END AS time_key,\n",
+        "    *\n",
+        "  FROM list_priced_usd\n",
+        ")\n",
+        "SELECT\n",
+        "  time_key,\n",
+        "  sku_name,\n",
+        "  CASE WHEN :param_usage_toggle = 'Dollars' THEN SUM(usage_usd) ELSE SUM(usage_dbus) END AS usage_value\n",
+        "FROM with_time_key\n",
+        "GROUP BY time_key, sku_name\n",
+        "ORDER BY time_key"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "<ALL WORKSPACES>"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {"value": "now-30d/d"},
+              "max": {"value": "now/d"}
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "Day"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_product_category",
+          "keyword": "param_product_category",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "<ALL>"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_discounts",
+          "keyword": "param_discounts",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "*=0.0"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_price_table",
+          "keyword": "param_price_table",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "billing.list_prices"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_usage_toggle",
+          "keyword": "param_usage_toggle",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "Dollars"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "ae01d025",
+      "displayName": "resource_detail",
+      "queryLines": [
+        "SET ansi_mode = true;\n",
+        "\n",
+        "WITH workspace AS (\n",
+        "  SELECT workspace_id, workspace_name,\n",
+        "    concat(COALESCE(workspace_name, ''), ' (id: ', workspace_id, ')') AS workspace_label\n",
+        "  FROM access.workspaces_latest\n",
+        "),\n",
+        "workspace_filtered AS (\n",
+        "  SELECT workspace_id, workspace_name, workspace_label\n",
+        "  FROM workspace\n",
+        "  WHERE IF(:param_workspace = '<ALL WORKSPACES>', TRUE, workspace_label = :param_workspace)\n",
+        "),\n",
+        "usage_with_ws AS (\n",
+        "  SELECT u.*\n",
+        "  FROM billing.usage AS u\n",
+        "  INNER JOIN workspace_filtered w ON u.workspace_id = w.workspace_id\n",
+        "  WHERE u.usage_date BETWEEN :param_date_range.min AND :param_date_range.max\n",
+        "),\n",
+        "usage_filtered AS (\n",
+        "  SELECT *\n",
+        "  FROM usage_with_ws\n",
+        "  WHERE IF(:param_product_category = '<ALL>', TRUE, billing_origin_product = :param_product_category)\n",
+        "),\n",
+        "parsed_discounts_table AS (\n",
+        "  WITH split_data AS (\n",
+        "    SELECT explode(split(regexp_replace(upper(:param_discounts), '\\\\s+', ''), ';')) AS kv_pair\n",
+        "    FROM VALUES(1) AS dummy(x)\n",
+        "  ),\n",
+        "  clean_keys AS (\n",
+        "    SELECT\n",
+        "      split(kv_pair, '=')[0] AS product,\n",
+        "      try_cast(split(kv_pair, '=')[1] AS decimal(10,3)) AS discount,\n",
+        "      CASE WHEN contains(kv_pair, '=') THEN 1 ELSE 0 END AS ContainsValuePair\n",
+        "    FROM split_data\n",
+        "  )\n",
+        "  SELECT * FROM clean_keys WHERE ContainsValuePair = 1\n",
+        "),\n",
+        "prices AS (\n",
+        "  SELECT coalesce(price_end_time, date_add(current_date, 1)) AS coalesced_price_end_time, *, 'list' AS price_type\n",
+        "  FROM IDENTIFIER(:param_price_table)\n",
+        "  WHERE currency_code = 'USD'\n",
+        "),\n",
+        "list_priced_usd AS (\n",
+        "  SELECT\n",
+        "    COALESCE(\n",
+        "      (1-try_cast(regexp_extract(:param_discounts, '\\\\s*\\\\*\\\\s*=\\\\s*([0-9]*\\\\.?[0-9]+)', 1) AS decimal(10, 3)))* p.pricing.default * u.usage_quantity,\n",
+        "      (1-COALESCE(discounts.discount, 0))* p.pricing.default * u.usage_quantity,\n",
+        "      p.pricing.default * u.usage_quantity) AS usage_usd,\n",
+        "    usage_quantity AS usage_dbus,\n",
+        "    u.*\n",
+        "  FROM usage_filtered AS u\n",
+        "  LEFT JOIN parsed_discounts_table AS discounts ON (discounts.product = u.sku_name OR discounts.product = u.billing_origin_product)\n",
+        "  LEFT JOIN prices AS p ON u.sku_name = p.sku_name AND u.usage_unit = p.usage_unit AND (u.usage_end_time BETWEEN p.price_start_time AND p.coalesced_price_end_time)\n",
+        ")\n",
+        "SELECT\n",
+        "  billing_origin_product AS product,\n",
+        "  sku_name,\n",
+        "  COALESCE(usage_metadata.endpoint_name, usage_metadata.warehouse_id, usage_metadata.serving_endpoint_id, CAST(usage_metadata.job_id AS STRING), usage_metadata.cluster_id, usage_metadata.dlt_pipeline_id, usage_metadata.notebook_id, 'unattributed') AS resource_id,\n",
+        "  CASE\n",
+        "    WHEN usage_metadata.endpoint_name IS NOT NULL THEN 'endpoint'\n",
+        "    WHEN usage_metadata.warehouse_id IS NOT NULL THEN 'warehouse'\n",
+        "    WHEN usage_metadata.serving_endpoint_id IS NOT NULL THEN 'serving_endpoint'\n",
+        "    WHEN usage_metadata.job_id IS NOT NULL THEN 'job'\n",
+        "    WHEN usage_metadata.cluster_id IS NOT NULL THEN 'cluster'\n",
+        "    WHEN usage_metadata.dlt_pipeline_id IS NOT NULL THEN 'pipeline'\n",
+        "    WHEN usage_metadata.notebook_id IS NOT NULL THEN 'notebook'\n",
+        "    ELSE 'unattributed'\n",
+        "  END AS resource_type,\n",
+        "  ROUND(SUM(usage_usd), 2) AS total_usd,\n",
+        "  ROUND(SUM(usage_dbus), 2) AS total_dbus\n",
+        "FROM list_priced_usd\n",
+        "GROUP BY product, sku_name, resource_id, resource_type\n",
+        "ORDER BY total_usd DESC\n",
+        "LIMIT 500"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_workspace",
+          "keyword": "param_workspace",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "<ALL WORKSPACES>"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_date_range",
+          "keyword": "param_date_range",
+          "dataType": "DATE",
+          "complexType": "RANGE",
+          "defaultSelection": {
+            "range": {
+              "dataType": "DATE",
+              "min": {"value": "now-30d/d"},
+              "max": {"value": "now/d"}
+            }
+          }
+        },
+        {
+          "displayName": "param_product_category",
+          "keyword": "param_product_category",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "<ALL>"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_discounts",
+          "keyword": "param_discounts",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "*=0.0"}]
+            }
+          }
+        },
+        {
+          "displayName": "param_price_table",
+          "keyword": "param_price_table",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [{"value": "billing.list_prices"}]
+            }
+          }
+        }
+      ]
     }
   ],
   "pages": [
@@ -1755,6 +2269,45 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "param_ae01w001_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d024",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w001_ae01d025",
+                "query": {
+                  "datasetName": "ae01d025",
+                  "parameters": [
+                    {
+                      "name": "param_workspace",
+                      "keyword": "param_workspace"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -1834,6 +2387,18 @@
                   {
                     "parameterName": "param_workspace",
                     "queryName": "param_ae01w001_ae01d017"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d023"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d024"
+                  },
+                  {
+                    "parameterName": "param_workspace",
+                    "queryName": "param_ae01w001_ae01d025"
                   }
                 ]
               },
@@ -2152,6 +2717,45 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "param_ae01w002_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d024",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w002_ae01d025",
+                "query": {
+                  "datasetName": "ae01d025",
+                  "parameters": [
+                    {
+                      "name": "param_date_range",
+                      "keyword": "param_date_range"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -2246,6 +2850,18 @@
                   {
                     "parameterName": "param_date_range",
                     "queryName": "param_ae01w002_ae01d022"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d023"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d024"
+                  },
+                  {
+                    "parameterName": "param_date_range",
+                    "queryName": "param_ae01w002_ae01d025"
                   }
                 ]
               },
@@ -2439,6 +3055,32 @@
                   ],
                   "disaggregated": false
                 }
+              },
+              {
+                "name": "param_ae01w003_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w003_ae01d024",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
               }
             ],
             "spec": {
@@ -2494,6 +3136,14 @@
                   {
                     "parameterName": "param_time_key",
                     "queryName": "param_ae01w003_ae01d021"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d023"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "param_ae01w003_ae01d024"
                   }
                 ]
               },
@@ -4370,6 +5020,438 @@
             "width": 6,
             "height": 8
           }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "ae01p005",
+      "displayName": "Usage Drill-Down",
+      "layout": [
+        {
+          "widget": {
+            "name": "ae01w037",
+            "queries": [
+              {
+                "name": "values_ae01w037",
+                "query": {
+                  "datasetName": "ae01f003",
+                  "fields": [
+                    {"name": "group_key", "expression": "`group_key`"},
+                    {"name": "group_key_associativity", "expression": "COUNT_IF(`associative_filter_predicate_group`)"}
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w037_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [{"name": "param_group_key", "keyword": "param_group_key"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {"fieldName": "group_key", "displayName": "group_key", "queryName": "values_ae01w037"},
+                  {"parameterName": "param_group_key", "queryName": "param_ae01w037_ae01d023"}
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [{"value": "Product"}]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Group By",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 0, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "ae01w038",
+            "queries": [
+              {
+                "name": "values_ae01w038",
+                "query": {
+                  "datasetName": "ae01f004",
+                  "fields": [
+                    {"name": "product_category", "expression": "`product_category`"},
+                    {"name": "product_category_associativity", "expression": "COUNT_IF(`associative_filter_predicate_group`)"}
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w038_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [{"name": "param_product_category", "keyword": "param_product_category"}],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w038_ae01d024",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "parameters": [{"name": "param_product_category", "keyword": "param_product_category"}],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w038_ae01d025",
+                "query": {
+                  "datasetName": "ae01d025",
+                  "parameters": [{"name": "param_product_category", "keyword": "param_product_category"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {"fieldName": "product_category", "displayName": "product_category", "queryName": "values_ae01w038"},
+                  {"parameterName": "param_product_category", "queryName": "param_ae01w038_ae01d023"},
+                  {"parameterName": "param_product_category", "queryName": "param_ae01w038_ae01d024"},
+                  {"parameterName": "param_product_category", "queryName": "param_ae01w038_ae01d025"}
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [{"value": "<ALL>"}]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Product",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 2, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "ae01w039",
+            "queries": [
+              {
+                "name": "values_ae01w039",
+                "query": {
+                  "datasetName": "ae01f005",
+                  "fields": [
+                    {"name": "usage_toggle", "expression": "`usage_toggle`"},
+                    {"name": "usage_toggle_associativity", "expression": "COUNT_IF(`associative_filter_predicate_group`)"}
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w039_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [{"name": "param_usage_toggle", "keyword": "param_usage_toggle"}],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w039_ae01d024",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "parameters": [{"name": "param_usage_toggle", "keyword": "param_usage_toggle"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {"fieldName": "usage_toggle", "displayName": "usage_toggle", "queryName": "values_ae01w039"},
+                  {"parameterName": "param_usage_toggle", "queryName": "param_ae01w039_ae01d023"},
+                  {"parameterName": "param_usage_toggle", "queryName": "param_ae01w039_ae01d024"}
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [{"value": "Dollars"}]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Usage Toggle",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 4, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "ae01w040",
+            "queries": [
+              {
+                "name": "param_ae01w040_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [{"name": "param_discounts", "keyword": "param_discounts"}],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w040_ae01d024",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "parameters": [{"name": "param_discounts", "keyword": "param_discounts"}],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w040_ae01d025",
+                "query": {
+                  "datasetName": "ae01d025",
+                  "parameters": [{"name": "param_discounts", "keyword": "param_discounts"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-text-entry",
+              "encodings": {
+                "fields": [
+                  {"parameterName": "param_discounts", "queryName": "param_ae01w040_ae01d023"},
+                  {"parameterName": "param_discounts", "queryName": "param_ae01w040_ae01d024"},
+                  {"parameterName": "param_discounts", "queryName": "param_ae01w040_ae01d025"}
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [{"value": "*=0.0"}]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Discounts (product=rate;...)",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 0, "y": 2, "width": 3, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "ae01w041",
+            "queries": [
+              {
+                "name": "param_ae01w041_ae01d023",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "parameters": [{"name": "param_price_table", "keyword": "param_price_table"}],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w041_ae01d024",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "parameters": [{"name": "param_price_table", "keyword": "param_price_table"}],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "param_ae01w041_ae01d025",
+                "query": {
+                  "datasetName": "ae01d025",
+                  "parameters": [{"name": "param_price_table", "keyword": "param_price_table"}],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-text-entry",
+              "encodings": {
+                "fields": [
+                  {"parameterName": "param_price_table", "queryName": "param_ae01w041_ae01d023"},
+                  {"parameterName": "param_price_table", "queryName": "param_ae01w041_ae01d024"},
+                  {"parameterName": "param_price_table", "queryName": "param_ae01w041_ae01d025"}
+                ]
+              },
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "STRING",
+                    "values": [{"value": "billing.list_prices"}]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Price Table",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 3, "y": 2, "width": 3, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "ae01w042",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d023",
+                  "fields": [
+                    {"name": "group_key", "expression": "`group_key`"},
+                    {"name": "time_key", "expression": "`time_key`"},
+                    {"name": "sum(usage_value)", "expression": "SUM(`usage_value`)"}
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {"type": "temporal"},
+                  "displayName": "Time"
+                },
+                "y": {
+                  "fieldName": "sum(usage_value)",
+                  "scale": {"type": "quantitative"},
+                  "displayName": "Usage"
+                },
+                "color": {
+                  "fieldName": "group_key",
+                  "scale": {"type": "categorical"},
+                  "legend": {"hideTitle": true, "position": "right"},
+                  "displayName": "group_key"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Usage by Group Key Over Time",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 0, "y": 4, "width": 6, "height": 8}
+        },
+        {
+          "widget": {
+            "name": "ae01w043",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d024",
+                  "fields": [
+                    {"name": "sku_name", "expression": "`sku_name`"},
+                    {"name": "time_key", "expression": "`time_key`"},
+                    {"name": "sum(usage_value)", "expression": "SUM(`usage_value`)"}
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {"type": "temporal"},
+                  "displayName": "Time"
+                },
+                "y": {
+                  "fieldName": "sum(usage_value)",
+                  "scale": {"type": "quantitative"},
+                  "displayName": "Usage"
+                },
+                "color": {
+                  "fieldName": "sku_name",
+                  "scale": {"type": "categorical"},
+                  "legend": {"hideTitle": true, "position": "right"},
+                  "displayName": "sku_name"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "SKU Components",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 0, "y": 12, "width": 6, "height": 8}
+        },
+        {
+          "widget": {
+            "name": "ae01w044",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae01d025",
+                  "fields": [
+                    {"name": "product", "expression": "`product`"},
+                    {"name": "sku_name", "expression": "`sku_name`"},
+                    {"name": "resource_type", "expression": "`resource_type`"},
+                    {"name": "resource_id", "expression": "`resource_id`"},
+                    {"name": "total_usd", "expression": "`total_usd`"},
+                    {"name": "total_dbus", "expression": "`total_dbus`"}
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {"fieldName": "product", "displayName": "Product"},
+                  {"fieldName": "sku_name", "displayName": "SKU"},
+                  {"fieldName": "resource_type", "displayName": "Resource Type"},
+                  {"fieldName": "resource_id", "displayName": "Resource"},
+                  {"fieldName": "total_usd", "displayName": "USD"},
+                  {"fieldName": "total_dbus", "displayName": "DBUs"}
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Resource Detail",
+                "showDescription": false
+              }
+            }
+          },
+          "position": {"x": 0, "y": 20, "width": 6, "height": 10}
         }
       ],
       "pageType": "PAGE_TYPE_CANVAS"
