@@ -9,6 +9,7 @@
 - Minimal print statements
 - Hard fail (no try/except)
 - Always use `uv run` instead of `python` 
+- Work with th
 
 ## Configuration
 - Widget parameters as defaults
